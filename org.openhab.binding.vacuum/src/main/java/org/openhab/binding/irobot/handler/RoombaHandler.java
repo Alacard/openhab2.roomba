@@ -36,17 +36,19 @@ import org.eclipse.smarthome.core.types.RefreshType;
 import org.eclipse.smarthome.core.types.State;
 import org.openhab.binding.irobot.internal.IdentProtocol;
 import org.openhab.binding.irobot.internal.IdentProtocol.IdentData;
+import org.openhab.binding.irobot.internal.MQTTProtocol;
+import org.openhab.binding.irobot.internal.MQTTProtocol.Schedule;
 import org.openhab.binding.irobot.internal.RawMQTT;
 import org.openhab.binding.irobot.roomba.RoombaConfiguration;
 import org.openhab.binding.irobot.roomba.RoombaMqttBrokerConnection;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import com.google.gson.JsonArray;
+import com.google.gson.Gson;
+import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParseException;
 import com.google.gson.JsonParser;
-import com.google.gson.JsonPrimitive;
 
 /**
  * The {@link RoombaHandler} is responsible for handling commands, which are
@@ -64,7 +66,7 @@ public class RoombaHandler extends BaseThingHandler {
     private String blid = null;
     protected RoombaMqttBrokerConnection connection;
     private Hashtable<String, State> lastState = new Hashtable<String, State>();
-    private JsonObject lastSchedule = null;
+    private Schedule lastSchedule = null;
     private boolean auto_passes = true;
     private Boolean two_passes = null;
     private boolean carpet_boost = true;
@@ -121,26 +123,20 @@ public class RoombaHandler extends BaseThingHandler {
                     cmd = isPaused ? "resume" : "start";
                 }
 
-                JsonObject request = new JsonObject();
-
-                request.addProperty("command", cmd);
-                request.addProperty("time", System.currentTimeMillis() / 1000);
-                request.addProperty("initiator", "localApp");
-
-                sendRequest("cmd", request);
+                sendRequest(new MQTTProtocol.CommandRequest(cmd));
             }
         } else if (ch.startsWith(CHANNEL_SCHED_SWITCH_PREFIX)) {
-            JsonObject schedule = lastSchedule;
+            MQTTProtocol.Schedule schedule = lastSchedule;
 
             // Schedule can only be updated in a bulk, so we have to store current
             // schedule and modify components.
-            if (command instanceof OnOffType && schedule != null && schedule.has("cycle")) {
+            if (command instanceof OnOffType && schedule != null && schedule.cycle != null) {
                 for (int i = 0; i < CHANNEL_SCHED_SWITCH.length; i++) {
                     if (ch.equals(CHANNEL_SCHED_SWITCH[i])) {
-                        JsonArray cycle = schedule.getAsJsonArray("cycle");
+                        MQTTProtocol.Schedule newSchedule = new MQTTProtocol.Schedule(schedule.cycle);
 
-                        enableCycle(cycle, i, command.equals(OnOffType.ON));
-                        sendSchedule(schedule);
+                        newSchedule.enableCycle(i, command.equals(OnOffType.ON));
+                        sendSchedule(newSchedule);
                         break;
                     }
                 }
@@ -148,69 +144,42 @@ public class RoombaHandler extends BaseThingHandler {
         } else if (ch.equals(CHANNEL_SCHEDULE)) {
             if (command instanceof DecimalType) {
                 int bitmask = ((DecimalType) command).intValue();
-                JsonArray cycle = new JsonArray(CHANNEL_SCHED_SWITCH.length);
-
-                for (int i = 0; i < CHANNEL_SCHED_SWITCH.length; i++) {
-                    enableCycle(cycle, i, (bitmask & (1 << i)) != 0);
-                }
-
-                JsonObject schedule = new JsonObject();
-                schedule.add("cycle", cycle);
-                sendSchedule(schedule);
+                sendSchedule(new MQTTProtocol.Schedule(bitmask));
             }
         } else if (ch.equals(CHANNEL_EDGE_CLEAN)) {
             if (command instanceof OnOffType) {
-                JsonObject state = new JsonObject();
-                state.addProperty("openOnly", command.equals(OnOffType.OFF));
-                sendDelta(state);
+                sendDelta(new MQTTProtocol.OpenOnly(command.equals(OnOffType.OFF)));
             }
         } else if (ch.equals(CHANNEL_ALWAYS_FINISH)) {
             if (command instanceof OnOffType) {
-                JsonObject state = new JsonObject();
-                state.addProperty("binPause", command.equals(OnOffType.OFF));
-                sendDelta(state);
+                sendDelta(new MQTTProtocol.BinPause(command.equals(OnOffType.OFF)));
             }
         } else if (ch.equals(CHANNEL_POWER_BOOST)) {
             if (command instanceof StringType) {
                 String cmd = command.toString();
-                JsonObject state = new JsonObject();
-                state.addProperty("carpetBoost", cmd.equals(BOOST_AUTO));
-                state.addProperty("vacHigh", cmd.equals(BOOST_PERFORMANCE));
-                sendDelta(state);
+                sendDelta(new MQTTProtocol.PowerBoost(cmd.equals(BOOST_AUTO), cmd.equals(BOOST_PERFORMANCE)));
             }
         } else if (ch.equals(CHANNEL_CLEAN_PASSES)) {
             if (command instanceof StringType) {
                 String cmd = command.toString();
-                JsonObject state = new JsonObject();
-                state.addProperty("noAutoPasses", !cmd.equals(PASSES_AUTO));
-                state.addProperty("twoPass", cmd.equals(PASSES_2));
-                sendDelta(state);
+                sendDelta(new MQTTProtocol.CleanPasses(!cmd.equals(PASSES_AUTO), cmd.equals(PASSES_2)));
             }
         }
     }
 
-    private void enableCycle(JsonArray cycle, int i, boolean enable) {
-        JsonPrimitive value = new JsonPrimitive(enable ? "start" : "none");
-        cycle.set(i, value);
+    private void sendSchedule(MQTTProtocol.Schedule schedule) {
+        sendDelta(new MQTTProtocol.CleanSchedule(schedule));
     }
 
-    private void sendSchedule(JsonObject schedule) {
-        JsonObject state = new JsonObject();
-        state.add("cleanSchedule", schedule);
-        sendDelta(state);
+    private void sendDelta(MQTTProtocol.StateValue state) {
+        sendRequest(new MQTTProtocol.DeltaRequest(state));
     }
 
-    private void sendDelta(JsonObject state) {
-        // Huge thanks to Dorita980 author(s) for an insight on this
-        JsonObject request = new JsonObject();
-        request.add("state", state);
+    private void sendRequest(MQTTProtocol.Request request) {
+        String json = new Gson().toJson(request);
 
-        logger.trace("Sending delta: {}", request.toString());
-        sendRequest("delta", request);
-    }
-
-    private void sendRequest(String topic, JsonObject request) {
-        connection.publish(topic, request.toString().getBytes());
+        logger.trace("Sending {}: {}", request.getTopic(), json);
+        connection.publish(request.getTopic(), json.getBytes());
     }
 
     private void connect() {
@@ -411,14 +380,14 @@ public class RoombaHandler extends BaseThingHandler {
 
             if (reported.has("cleanSchedule")) {
                 // "cleanSchedule":{"cycle":["none","start","start","start","start","none","none"],"h":[9,12,12,12,12,12,9],"m":[0,0,0,0,0,0,0]}
-                JsonObject schedule = reported.getAsJsonObject("cleanSchedule");
+                JsonElement sched_element = reported.get("cleanSchedule");
+                MQTTProtocol.Schedule schedule = new Gson().fromJson(sched_element, MQTTProtocol.Schedule.class);
 
-                if (schedule.has("cycle")) {
-                    JsonArray cycle = schedule.getAsJsonArray("cycle");
+                if (schedule.cycle != null) {
                     int binary = 0;
 
-                    for (int i = 0; i < cycle.size(); i++) {
-                        boolean on = cycle.get(i).getAsString().equals("start");
+                    for (int i = 0; i < CHANNEL_SCHED_SWITCH.length; i++) {
+                        boolean on = schedule.cycleEnabled(i);
 
                         reportSwitch(CHANNEL_SCHED_SWITCH[i], on);
                         if (on) {
