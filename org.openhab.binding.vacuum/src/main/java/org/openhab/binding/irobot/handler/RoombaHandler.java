@@ -9,6 +9,7 @@ package org.openhab.binding.irobot.handler;
 
 import static org.openhab.binding.irobot.IRobotBindingConstants.*;
 
+import java.io.IOException;
 import java.net.DatagramPacket;
 import java.net.DatagramSocket;
 import java.net.InetAddress;
@@ -33,9 +34,6 @@ import org.eclipse.smarthome.core.thing.binding.BaseThingHandler;
 import org.eclipse.smarthome.core.types.Command;
 import org.eclipse.smarthome.core.types.RefreshType;
 import org.eclipse.smarthome.core.types.State;
-import org.json.JSONArray;
-import org.json.JSONException;
-import org.json.JSONObject;
 import org.openhab.binding.irobot.internal.IdentProtocol;
 import org.openhab.binding.irobot.internal.IdentProtocol.IdentData;
 import org.openhab.binding.irobot.internal.RawMQTT;
@@ -43,6 +41,12 @@ import org.openhab.binding.irobot.roomba.RoombaConfiguration;
 import org.openhab.binding.irobot.roomba.RoombaMqttBrokerConnection;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
+import com.google.gson.JsonArray;
+import com.google.gson.JsonObject;
+import com.google.gson.JsonParseException;
+import com.google.gson.JsonParser;
+import com.google.gson.JsonPrimitive;
 
 /**
  * The {@link RoombaHandler} is responsible for handling commands, which are
@@ -60,7 +64,7 @@ public class RoombaHandler extends BaseThingHandler {
     private String blid = null;
     protected RoombaMqttBrokerConnection connection;
     private Hashtable<String, State> lastState = new Hashtable<String, State>();
-    private JSONObject lastSchedule = null;
+    private JsonObject lastSchedule = null;
     private boolean auto_passes = true;
     private Boolean two_passes = null;
     private boolean carpet_boost = true;
@@ -117,23 +121,23 @@ public class RoombaHandler extends BaseThingHandler {
                     cmd = isPaused ? "resume" : "start";
                 }
 
-                JSONObject request = new JSONObject();
+                JsonObject request = new JsonObject();
 
-                request.put("command", cmd);
-                request.put("time", System.currentTimeMillis() / 1000);
-                request.put("initiator", "localApp");
+                request.addProperty("command", cmd);
+                request.addProperty("time", System.currentTimeMillis() / 1000);
+                request.addProperty("initiator", "localApp");
 
                 sendRequest("cmd", request);
             }
         } else if (ch.startsWith(CHANNEL_SCHED_SWITCH_PREFIX)) {
-            JSONObject schedule = lastSchedule;
+            JsonObject schedule = lastSchedule;
 
             // Schedule can only be updated in a bulk, so we have to store current
             // schedule and modify components.
             if (command instanceof OnOffType && schedule != null && schedule.has("cycle")) {
                 for (int i = 0; i < CHANNEL_SCHED_SWITCH.length; i++) {
                     if (ch.equals(CHANNEL_SCHED_SWITCH[i])) {
-                        JSONArray cycle = schedule.getJSONArray("cycle");
+                        JsonArray cycle = schedule.getAsJsonArray("cycle");
 
                         enableCycle(cycle, i, command.equals(OnOffType.ON));
                         sendSchedule(schedule);
@@ -144,67 +148,68 @@ public class RoombaHandler extends BaseThingHandler {
         } else if (ch.equals(CHANNEL_SCHEDULE)) {
             if (command instanceof DecimalType) {
                 int bitmask = ((DecimalType) command).intValue();
-                JSONArray cycle = new JSONArray();
+                JsonArray cycle = new JsonArray(CHANNEL_SCHED_SWITCH.length);
 
                 for (int i = 0; i < CHANNEL_SCHED_SWITCH.length; i++) {
                     enableCycle(cycle, i, (bitmask & (1 << i)) != 0);
                 }
 
-                JSONObject schedule = new JSONObject();
-                schedule.put("cycle", cycle);
+                JsonObject schedule = new JsonObject();
+                schedule.add("cycle", cycle);
                 sendSchedule(schedule);
             }
         } else if (ch.equals(CHANNEL_EDGE_CLEAN)) {
             if (command instanceof OnOffType) {
-                JSONObject state = new JSONObject();
-                state.put("openOnly", command.equals(OnOffType.OFF));
+                JsonObject state = new JsonObject();
+                state.addProperty("openOnly", command.equals(OnOffType.OFF));
                 sendDelta(state);
             }
         } else if (ch.equals(CHANNEL_ALWAYS_FINISH)) {
             if (command instanceof OnOffType) {
-                JSONObject state = new JSONObject();
-                state.put("binPause", command.equals(OnOffType.OFF));
+                JsonObject state = new JsonObject();
+                state.addProperty("binPause", command.equals(OnOffType.OFF));
                 sendDelta(state);
             }
         } else if (ch.equals(CHANNEL_POWER_BOOST)) {
             if (command instanceof StringType) {
                 String cmd = command.toString();
-                JSONObject state = new JSONObject();
-                state.put("carpetBoost", cmd.equals(BOOST_AUTO));
-                state.put("vacHigh", cmd.equals(BOOST_PERFORMANCE));
+                JsonObject state = new JsonObject();
+                state.addProperty("carpetBoost", cmd.equals(BOOST_AUTO));
+                state.addProperty("vacHigh", cmd.equals(BOOST_PERFORMANCE));
                 sendDelta(state);
             }
         } else if (ch.equals(CHANNEL_CLEAN_PASSES)) {
             if (command instanceof StringType) {
                 String cmd = command.toString();
-                JSONObject state = new JSONObject();
-                state.put("noAutoPasses", !cmd.equals(PASSES_AUTO));
-                state.put("twoPass", cmd.equals(PASSES_2));
+                JsonObject state = new JsonObject();
+                state.addProperty("noAutoPasses", !cmd.equals(PASSES_AUTO));
+                state.addProperty("twoPass", cmd.equals(PASSES_2));
                 sendDelta(state);
             }
         }
     }
 
-    private void enableCycle(JSONArray cycle, int i, boolean enable) {
-        cycle.put(i, enable ? "start" : "none");
+    private void enableCycle(JsonArray cycle, int i, boolean enable) {
+        JsonPrimitive value = new JsonPrimitive(enable ? "start" : "none");
+        cycle.set(i, value);
     }
 
-    private void sendSchedule(JSONObject schedule) {
-        JSONObject state = new JSONObject();
-        state.put("cleanSchedule", schedule);
+    private void sendSchedule(JsonObject schedule) {
+        JsonObject state = new JsonObject();
+        state.add("cleanSchedule", schedule);
         sendDelta(state);
     }
 
-    private void sendDelta(JSONObject state) {
+    private void sendDelta(JsonObject state) {
         // Huge thanks to Dorita980 author(s) for an insight on this
-        JSONObject request = new JSONObject();
-        request.put("state", state);
+        JsonObject request = new JsonObject();
+        request.add("state", state);
 
         logger.trace("Sending delta: {}", request.toString());
         sendRequest("delta", request);
     }
 
-    private void sendRequest(String topic, JSONObject request) {
+    private void sendRequest(String topic, JsonObject request) {
         connection.publish(topic, request.toString().getBytes());
     }
 
@@ -229,7 +234,7 @@ public class RoombaHandler extends BaseThingHandler {
 
                     try {
                         ident = new IdentProtocol.IdentData(identPacket);
-                    } catch (JSONException e) {
+                    } catch (JsonParseException | ClassCastException e) {
                         updateStatus(ThingStatus.OFFLINE, ThingStatusDetail.COMMUNICATION_ERROR,
                                 "Malformed IDENT response");
                         return;
@@ -292,7 +297,7 @@ public class RoombaHandler extends BaseThingHandler {
                 connection = new RoombaMqttBrokerConnection(config.ipaddress, blid, this);
                 connection.start(blid, config.password);
 
-            } catch (Exception e) {
+            } catch (IOException e) {
                 error = e.toString();
             }
 
@@ -332,19 +337,20 @@ public class RoombaHandler extends BaseThingHandler {
             // Of the second form i've so far observed only: {"state":{"desired":{"echo":null}}}
             // I don't know what it is, so let's ignore it.
             // Examples of the first form are given below, near the respective parsing code
-            JSONObject state = new JSONObject(jsonStr).getJSONObject("state");
+            JsonParser parser = new JsonParser();
+            JsonObject state = parser.parse(jsonStr).getAsJsonObject().getAsJsonObject("state");
 
             if (!state.has("reported")) {
                 return;
             }
 
-            JSONObject reported = state.getJSONObject("reported");
+            JsonObject reported = state.getAsJsonObject("reported");
 
             if (reported.has("cleanMissionStatus")) {
                 // {"cleanMissionStatus":{"cycle":"clean","phase":"hmUsrDock","expireM":0,"rechrgM":0,"error":0,"notReady":0,"mssnM":1,"sqft":7,"initiator":"rmtApp","nMssn":39}}
-                JSONObject missionStatus = reported.getJSONObject("cleanMissionStatus");
-                String cycle = missionStatus.getString("cycle");
-                String phase = missionStatus.getString("phase");
+                JsonObject missionStatus = reported.getAsJsonObject("cleanMissionStatus");
+                String cycle = missionStatus.get("cycle").getAsString();
+                String phase = missionStatus.get("phase").getAsString();
                 String command;
 
                 if (cycle.equals("none")) {
@@ -371,22 +377,22 @@ public class RoombaHandler extends BaseThingHandler {
                 reportString(CHANNEL_CYCLE, cycle);
                 reportString(CHANNEL_PHASE, phase);
                 reportString(CHANNEL_COMMAND, command);
-                reportString(CHANNEL_ERROR, String.valueOf(missionStatus.getInt("error")));
+                reportString(CHANNEL_ERROR, String.valueOf(missionStatus.get("error").getAsInt()));
             }
 
             if (reported.has("batPct")) {
-                reportInt(CHANNEL_BATTERY, reported.getInt("batPct"));
+                reportInt(CHANNEL_BATTERY, reported.get("batPct").getAsInt());
             }
 
             if (reported.has("bin")) {
-                JSONObject bin = reported.getJSONObject("bin");
+                JsonObject bin = reported.getAsJsonObject("bin");
                 String binStatus;
 
                 // The bin cannot be both full and removed simultaneously, so let's
                 // encode it as a single value
-                if (!bin.getBoolean("present")) {
+                if (!bin.get("present").getAsBoolean()) {
                     binStatus = BIN_REMOVED;
-                } else if (bin.getBoolean("full")) {
+                } else if (bin.get("full").getAsBoolean()) {
                     binStatus = BIN_FULL;
                 } else {
                     binStatus = BIN_OK;
@@ -397,22 +403,22 @@ public class RoombaHandler extends BaseThingHandler {
 
             if (reported.has("signal")) {
                 // {"signal":{"rssi":-55,"snr":33}}
-                JSONObject signal = reported.getJSONObject("signal");
+                JsonObject signal = reported.getAsJsonObject("signal");
 
-                reportInt(CHANNEL_RSSI, signal.getInt("rssi"));
-                reportInt(CHANNEL_SNR, signal.getInt("snr"));
+                reportInt(CHANNEL_RSSI, signal.get("rssi").getAsInt());
+                reportInt(CHANNEL_SNR, signal.get("snr").getAsInt());
             }
 
             if (reported.has("cleanSchedule")) {
                 // "cleanSchedule":{"cycle":["none","start","start","start","start","none","none"],"h":[9,12,12,12,12,12,9],"m":[0,0,0,0,0,0,0]}
-                JSONObject schedule = reported.getJSONObject("cleanSchedule");
+                JsonObject schedule = reported.getAsJsonObject("cleanSchedule");
 
                 if (schedule.has("cycle")) {
-                    JSONArray cycle = schedule.getJSONArray("cycle");
+                    JsonArray cycle = schedule.getAsJsonArray("cycle");
                     int binary = 0;
 
-                    for (int i = 0; i < cycle.length(); i++) {
-                        boolean on = cycle.getString(i).equals("start");
+                    for (int i = 0; i < cycle.size(); i++) {
+                        boolean on = cycle.get(i).getAsString().equals("start");
 
                         reportSwitch(CHANNEL_SCHED_SWITCH[i], on);
                         if (on) {
@@ -428,17 +434,17 @@ public class RoombaHandler extends BaseThingHandler {
 
             if (reported.has("openOnly")) {
                 // "openOnly":false
-                reportSwitch(CHANNEL_EDGE_CLEAN, !reported.getBoolean("openOnly"));
+                reportSwitch(CHANNEL_EDGE_CLEAN, !reported.get("openOnly").getAsBoolean());
             }
 
             if (reported.has("binPause")) {
                 // "binPause":true
-                reportSwitch(CHANNEL_ALWAYS_FINISH, !reported.getBoolean("binPause"));
+                reportSwitch(CHANNEL_ALWAYS_FINISH, !reported.get("binPause").getAsBoolean());
             }
 
             if (reported.has("carpetBoost")) {
                 // "carpetBoost":true
-                carpet_boost = reported.getBoolean("carpetBoost");
+                carpet_boost = reported.get("carpetBoost").getAsBoolean();
                 if (carpet_boost) {
                     // When set to true, overrides vacHigh
                     reportString(CHANNEL_POWER_BOOST, BOOST_AUTO);
@@ -449,7 +455,7 @@ public class RoombaHandler extends BaseThingHandler {
 
             if (reported.has("vacHigh")) {
                 // "vacHigh":false
-                vac_high = reported.getBoolean("vacHigh");
+                vac_high = reported.get("vacHigh").getAsBoolean();
                 if (!carpet_boost) {
                     // Can be overridden by "carpetBoost":true
                     reportVacHigh();
@@ -458,7 +464,7 @@ public class RoombaHandler extends BaseThingHandler {
 
             if (reported.has("noAutoPasses")) {
                 // "noAutoPasses":true
-                auto_passes = !reported.getBoolean("noAutoPasses");
+                auto_passes = !reported.get("noAutoPasses").getAsBoolean();
                 if (auto_passes) {
                     // When set to false, overrides twoPass
                     reportString(CHANNEL_CLEAN_PASSES, PASSES_AUTO);
@@ -469,7 +475,7 @@ public class RoombaHandler extends BaseThingHandler {
 
             if (reported.has("twoPass")) {
                 // "twoPass":true
-                two_passes = reported.getBoolean("twoPass");
+                two_passes = reported.get("twoPass").getAsBoolean();
                 if (!auto_passes) {
                     // Can be overridden by "noAutoPasses":false
                     reportTwoPasses();
@@ -483,7 +489,7 @@ public class RoombaHandler extends BaseThingHandler {
             reportProperty(reported, "mobilityVer");
             reportProperty(reported, "bootloaderVer");
             reportProperty(reported, "umiVer");
-        } catch (JSONException e) {
+        } catch (JsonParseException | ClassCastException e) {
             logger.error("Failed to parse JSON message from {}: {}", config.ipaddress, e);
             logger.error("Raw contents: {}", payload);
         }
@@ -514,13 +520,13 @@ public class RoombaHandler extends BaseThingHandler {
         updateState(channel, value);
     }
 
-    private void reportProperty(JSONObject container, String attribute) {
+    private void reportProperty(JsonObject container, String attribute) {
         reportProperty(attribute, container, attribute);
     }
 
-    private void reportProperty(String property, JSONObject container, String attribute) {
-        if (container.has(attribute)) {
-            updateProperty(property, container.getString(attribute));
+    private void reportProperty(String property, JsonObject reported, String attribute) {
+        if (reported.has(attribute)) {
+            updateProperty(property, reported.get(attribute).getAsString());
         }
     }
 }

@@ -1,20 +1,23 @@
 package org.openhab.binding.irobot.internal;
 
 import java.io.IOException;
+import java.io.StringReader;
 import java.net.DatagramPacket;
 import java.net.DatagramSocket;
 import java.net.InetAddress;
 import java.nio.charset.StandardCharsets;
 
-import org.json.JSONException;
-import org.json.JSONObject;
+import com.google.gson.JsonObject;
+import com.google.gson.JsonParseException;
+import com.google.gson.JsonParser;
+import com.google.gson.stream.JsonReader;
 
 public class IdentProtocol {
 
     private static final String UDP_PACKET_CONTENTS = "irobotmcs";
     private static final int REMOTE_UDP_PORT = 5678;
 
-    public static DatagramSocket sendRequest(InetAddress host) throws Exception {
+    public static DatagramSocket sendRequest(InetAddress host) throws IOException {
         DatagramSocket socket = new DatagramSocket();
 
         socket.setBroadcast(true);
@@ -46,7 +49,7 @@ public class IdentProtocol {
         public String blid;
         public String robotname;
 
-        public IdentData(DatagramPacket incomingPacket) throws JSONException {
+        public IdentData(DatagramPacket incomingPacket) throws JsonParseException, ClassCastException {
             /*
              * incomingPacket is a JSON of the following contents (addresses are undisclosed):
              * @formatter:off
@@ -77,12 +80,17 @@ public class IdentProtocol {
              * @formatter:on
              */
             String reply = new String(incomingPacket.getData());
-            JSONObject irobotInfo = new JSONObject(reply);
+            JsonParser parser = new JsonParser();
+            JsonReader jsonReader = new JsonReader(new StringReader(reply));
+            // GSON bug? The JSON above doesn't look malformed.
+            // Does it choke on "mac" field, containing ':' inside the string ?
+            jsonReader.setLenient(true);
+            JsonObject irobotInfo = parser.parse(jsonReader).getAsJsonObject();
 
-            ver = irobotInfo.getInt("ver");
-            robotname = irobotInfo.getString("robotname");
+            ver = irobotInfo.get("ver").getAsInt();
+            robotname = irobotInfo.get("robotname").getAsString();
 
-            String[] hostname = irobotInfo.getString("hostname").split("-");
+            String[] hostname = irobotInfo.get("hostname").getAsString().split("-");
 
             // This also comes from Roomba980-Python. Comments there say that "iRobot"
             // prefix is used by i7. We assume for other robots it would be product

@@ -16,7 +16,6 @@ import org.eclipse.smarthome.config.discovery.DiscoveryResultBuilder;
 import org.eclipse.smarthome.config.discovery.DiscoveryService;
 import org.eclipse.smarthome.core.net.NetUtil;
 import org.eclipse.smarthome.core.thing.ThingUID;
-import org.json.JSONException;
 import org.openhab.binding.irobot.IRobotBindingConstants;
 import org.openhab.binding.irobot.internal.IdentProtocol;
 import org.openhab.binding.irobot.internal.IdentProtocol.IdentData;
@@ -24,6 +23,8 @@ import org.openhab.binding.irobot.roomba.RoombaConfiguration;
 import org.osgi.service.component.annotations.Component;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
+import com.google.gson.JsonParseException;
 
 @Component(service = DiscoveryService.class)
 public class IRobotDiscoveryService extends AbstractDiscoveryService {
@@ -118,7 +119,7 @@ public class IRobotDiscoveryService extends AbstractDiscoveryService {
 
         try {
             ident = new IdentProtocol.IdentData(incomingPacket);
-        } catch (JSONException e) {
+        } catch (JsonParseException | ClassCastException e) {
             logger.error("Malformed JSON reply!");
             return true;
         }
