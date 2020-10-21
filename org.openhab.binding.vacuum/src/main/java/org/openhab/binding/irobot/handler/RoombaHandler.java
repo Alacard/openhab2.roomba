@@ -10,6 +10,7 @@ package org.openhab.binding.irobot.handler;
 import static org.openhab.binding.irobot.IRobotBindingConstants.*;
 
 import java.io.IOException;
+import java.io.StringReader;
 import java.net.DatagramPacket;
 import java.net.DatagramSocket;
 import java.net.InetAddress;
@@ -45,10 +46,8 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import com.google.gson.Gson;
-import com.google.gson.JsonElement;
-import com.google.gson.JsonObject;
 import com.google.gson.JsonParseException;
-import com.google.gson.JsonParser;
+import com.google.gson.stream.JsonReader;
 
 /**
  * The {@link RoombaHandler} is responsible for handling commands, which are
@@ -202,7 +201,7 @@ public class RoombaHandler extends BaseThingHandler {
                     IdentProtocol.IdentData ident;
 
                     try {
-                        ident = new IdentProtocol.IdentData(identPacket);
+                        ident = IdentProtocol.decodeResponse(identPacket);
                     } catch (JsonParseException | ClassCastException e) {
                         updateStatus(ThingStatus.OFFLINE, ThingStatusDetail.COMMUNICATION_ERROR,
                                 "Malformed IDENT response");
@@ -301,25 +300,25 @@ public class RoombaHandler extends BaseThingHandler {
         logger.trace("Got topic {} data {}", topic, jsonStr);
 
         try {
-            // Data comes as JSON string: {"state":{"reported":<Actual content here>}}
-            // or: {"state":{"desired":<Some content here>}}
-            // Of the second form i've so far observed only: {"state":{"desired":{"echo":null}}}
-            // I don't know what it is, so let's ignore it.
-            // Examples of the first form are given below, near the respective parsing code
-            JsonParser parser = new JsonParser();
-            JsonObject state = parser.parse(jsonStr).getAsJsonObject().getAsJsonObject("state");
+            // We are not consuming all the fields, so we have to create the reader explicitly
+            // If we use fromJson(String) or fromJson(java.util.reader), it will throw
+            // "JSON not fully consumed" exception, because not all the reader's content has been
+            // used up. We want to avoid that also for compatibility reasons because newer iRobot
+            // versions may add fields.
+            JsonReader jsonReader = new JsonReader(new StringReader(jsonStr));
+            MQTTProtocol.StateMessage msg = new Gson().fromJson(jsonReader, IdentData.class);
 
-            if (!state.has("reported")) {
+            // Since all the fields are in fact optional, and a single message never
+            // contains all of them, we have to check presence of each individually
+            if (msg.state == null || msg.state.reported == null) {
                 return;
             }
 
-            JsonObject reported = state.getAsJsonObject("reported");
+            MQTTProtocol.GenericState reported = msg.state.reported;
 
-            if (reported.has("cleanMissionStatus")) {
-                // {"cleanMissionStatus":{"cycle":"clean","phase":"hmUsrDock","expireM":0,"rechrgM":0,"error":0,"notReady":0,"mssnM":1,"sqft":7,"initiator":"rmtApp","nMssn":39}}
-                JsonObject missionStatus = reported.getAsJsonObject("cleanMissionStatus");
-                String cycle = missionStatus.get("cycle").getAsString();
-                String phase = missionStatus.get("phase").getAsString();
+            if (reported.cleanMissionStatus != null) {
+                String cycle = reported.cleanMissionStatus.cycle;
+                String phase = reported.cleanMissionStatus.phase;
                 String command;
 
                 if (cycle.equals("none")) {
@@ -346,22 +345,21 @@ public class RoombaHandler extends BaseThingHandler {
                 reportString(CHANNEL_CYCLE, cycle);
                 reportString(CHANNEL_PHASE, phase);
                 reportString(CHANNEL_COMMAND, command);
-                reportString(CHANNEL_ERROR, String.valueOf(missionStatus.get("error").getAsInt()));
+                reportString(CHANNEL_ERROR, String.valueOf(reported.cleanMissionStatus.error));
             }
 
-            if (reported.has("batPct")) {
-                reportInt(CHANNEL_BATTERY, reported.get("batPct").getAsInt());
+            if (reported.batPct != null) {
+                reportInt(CHANNEL_BATTERY, reported.batPct);
             }
 
-            if (reported.has("bin")) {
-                JsonObject bin = reported.getAsJsonObject("bin");
+            if (reported.bin != null) {
                 String binStatus;
 
                 // The bin cannot be both full and removed simultaneously, so let's
                 // encode it as a single value
-                if (!bin.get("present").getAsBoolean()) {
+                if (!reported.bin.present) {
                     binStatus = BIN_REMOVED;
-                } else if (bin.get("full").getAsBoolean()) {
+                } else if (reported.bin.full) {
                     binStatus = BIN_FULL;
                 } else {
                     binStatus = BIN_OK;
@@ -370,18 +368,13 @@ public class RoombaHandler extends BaseThingHandler {
                 reportString(CHANNEL_BIN, binStatus);
             }
 
-            if (reported.has("signal")) {
-                // {"signal":{"rssi":-55,"snr":33}}
-                JsonObject signal = reported.getAsJsonObject("signal");
-
-                reportInt(CHANNEL_RSSI, signal.get("rssi").getAsInt());
-                reportInt(CHANNEL_SNR, signal.get("snr").getAsInt());
+            if (reported.signal != null) {
+                reportInt(CHANNEL_RSSI, reported.signal.rssi);
+                reportInt(CHANNEL_SNR, reported.signal.snr);
             }
 
-            if (reported.has("cleanSchedule")) {
-                // "cleanSchedule":{"cycle":["none","start","start","start","start","none","none"],"h":[9,12,12,12,12,12,9],"m":[0,0,0,0,0,0,0]}
-                JsonElement sched_element = reported.get("cleanSchedule");
-                MQTTProtocol.Schedule schedule = new Gson().fromJson(sched_element, MQTTProtocol.Schedule.class);
+            if (reported.cleanSchedule != null) {
+                MQTTProtocol.Schedule schedule = reported.cleanSchedule;
 
                 if (schedule.cycle != null) {
                     int binary = 0;
@@ -401,20 +394,19 @@ public class RoombaHandler extends BaseThingHandler {
                 lastSchedule = schedule;
             }
 
-            if (reported.has("openOnly")) {
-                // "openOnly":false
-                reportSwitch(CHANNEL_EDGE_CLEAN, !reported.get("openOnly").getAsBoolean());
+            if (reported.openOnly != null) {
+                reportSwitch(CHANNEL_EDGE_CLEAN, !reported.openOnly);
             }
 
-            if (reported.has("binPause")) {
-                // "binPause":true
-                reportSwitch(CHANNEL_ALWAYS_FINISH, !reported.get("binPause").getAsBoolean());
+            if (reported.binPause != null) {
+                reportSwitch(CHANNEL_ALWAYS_FINISH, !reported.binPause);
             }
 
-            if (reported.has("carpetBoost")) {
-                // "carpetBoost":true
-                carpet_boost = reported.get("carpetBoost").getAsBoolean();
-                if (carpet_boost) {
+            // To make the life more interesting, paired values may not appear together in the
+            // same message, so we have to keep track of current values.
+            if (reported.carpetBoost != null) {
+                carpet_boost = reported.carpetBoost;
+                if (reported.carpetBoost) {
                     // When set to true, overrides vacHigh
                     reportString(CHANNEL_POWER_BOOST, BOOST_AUTO);
                 } else if (vac_high != null) {
@@ -422,19 +414,17 @@ public class RoombaHandler extends BaseThingHandler {
                 }
             }
 
-            if (reported.has("vacHigh")) {
-                // "vacHigh":false
-                vac_high = reported.get("vacHigh").getAsBoolean();
+            if (reported.vacHigh != null) {
+                vac_high = reported.vacHigh;
                 if (!carpet_boost) {
                     // Can be overridden by "carpetBoost":true
                     reportVacHigh();
                 }
             }
 
-            if (reported.has("noAutoPasses")) {
-                // "noAutoPasses":true
-                auto_passes = !reported.get("noAutoPasses").getAsBoolean();
-                if (auto_passes) {
+            if (reported.noAutoPasses != null) {
+                auto_passes = !reported.noAutoPasses;
+                if (!reported.noAutoPasses) {
                     // When set to false, overrides twoPass
                     reportString(CHANNEL_CLEAN_PASSES, PASSES_AUTO);
                 } else if (two_passes != null) {
@@ -442,23 +432,21 @@ public class RoombaHandler extends BaseThingHandler {
                 }
             }
 
-            if (reported.has("twoPass")) {
-                // "twoPass":true
-                two_passes = reported.get("twoPass").getAsBoolean();
+            if (reported.twoPass != null) {
+                two_passes = reported.twoPass;
                 if (!auto_passes) {
                     // Can be overridden by "noAutoPasses":false
                     reportTwoPasses();
                 }
             }
 
-            // {"navSwVer":"01.12.01#1","wifiSwVer":"20992","mobilityVer":"5806","bootloaderVer":"4042","umiVer":"6","softwareVer":"v2.4.6-3","tz":{"events":[{"dt":1583082000,"off":180},{"dt":1619884800,"off":180},{"dt":0,"off":0}],"ver":8}}
-            reportProperty(Thing.PROPERTY_FIRMWARE_VERSION, reported, "softwareVer");
-            reportProperty(reported, "navSwVer");
-            reportProperty(reported, "wifiSwVer");
-            reportProperty(reported, "mobilityVer");
-            reportProperty(reported, "bootloaderVer");
-            reportProperty(reported, "umiVer");
-        } catch (JsonParseException | ClassCastException e) {
+            reportProperty(Thing.PROPERTY_FIRMWARE_VERSION, reported.softwareVer);
+            reportProperty("navSwVer", reported.navSwVer);
+            reportProperty("wifiSwVer", reported.wifiSwVer);
+            reportProperty("mobilityVer", reported.mobilityVer);
+            reportProperty("bootloaderVer", reported.bootloaderVer);
+            reportProperty("umiVer", reported.umiVer);
+        } catch (JsonParseException e) {
             logger.error("Failed to parse JSON message from {}: {}", config.ipaddress, e);
             logger.error("Raw contents: {}", payload);
         }
@@ -489,13 +477,9 @@ public class RoombaHandler extends BaseThingHandler {
         updateState(channel, value);
     }
 
-    private void reportProperty(JsonObject container, String attribute) {
-        reportProperty(attribute, container, attribute);
-    }
-
-    private void reportProperty(String property, JsonObject reported, String attribute) {
-        if (reported.has(attribute)) {
-            updateProperty(property, reported.get(attribute).getAsString());
+    private void reportProperty(String property, String value) {
+        if (value != null) {
+            updateProperty(property, value);
         }
     }
 }
