@@ -39,7 +39,7 @@ public class IdentProtocol {
         return incomingPacket;
     }
 
-    public static IdentData decodeResponse(DatagramPacket packet) throws JsonParseException, ClassCastException {
+    public static IdentData decodeResponse(DatagramPacket packet) throws JsonParseException {
         /*
          * packet is a JSON of the following contents (addresses are undisclosed):
          * @formatter:off

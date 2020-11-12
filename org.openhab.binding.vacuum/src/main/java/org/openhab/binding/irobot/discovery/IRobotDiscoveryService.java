@@ -118,8 +118,8 @@ public class IRobotDiscoveryService extends AbstractDiscoveryService {
         IdentProtocol.IdentData ident;
 
         try {
-            ident = new IdentProtocol.IdentData(incomingPacket);
-        } catch (JsonParseException | ClassCastException e) {
+            ident = IdentProtocol.decodeResponse(incomingPacket);
+        } catch (JsonParseException e) {
             logger.error("Malformed JSON reply!");
             return true;
         }

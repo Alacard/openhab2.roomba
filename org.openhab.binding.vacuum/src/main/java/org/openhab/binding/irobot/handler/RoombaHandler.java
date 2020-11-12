@@ -202,7 +202,7 @@ public class RoombaHandler extends BaseThingHandler {
 
                     try {
                         ident = IdentProtocol.decodeResponse(identPacket);
-                    } catch (JsonParseException | ClassCastException e) {
+                    } catch (JsonParseException e) {
                         updateStatus(ThingStatus.OFFLINE, ThingStatusDetail.COMMUNICATION_ERROR,
                                 "Malformed IDENT response");
                         return;
