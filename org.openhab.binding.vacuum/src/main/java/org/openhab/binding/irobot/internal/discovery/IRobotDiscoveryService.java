@@ -1,5 +1,18 @@
-package org.openhab.binding.irobot.discovery;
+/**
+ * Copyright (c) 2010-2020 Contributors to the openHAB project
+ *
+ * See the NOTICE file(s) distributed with this work for additional
+ * information.
+ *
+ * This program and the accompanying materials are made available under the
+ * terms of the Eclipse Public License 2.0 which is available at
+ * http://www.eclipse.org/legal/epl-2.0
+ *
+ * SPDX-License-Identifier: EPL-2.0
+ */
+package org.openhab.binding.irobot.internal.discovery;
 
+import java.io.IOException;
 import java.net.DatagramPacket;
 import java.net.DatagramSocket;
 import java.net.InetAddress;
@@ -10,28 +23,36 @@ import java.util.List;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
 
+import org.eclipse.jdt.annotation.NonNullByDefault;
+import org.eclipse.jdt.annotation.Nullable;
 import org.eclipse.smarthome.config.discovery.AbstractDiscoveryService;
 import org.eclipse.smarthome.config.discovery.DiscoveryResult;
 import org.eclipse.smarthome.config.discovery.DiscoveryResultBuilder;
 import org.eclipse.smarthome.config.discovery.DiscoveryService;
 import org.eclipse.smarthome.core.net.NetUtil;
 import org.eclipse.smarthome.core.thing.ThingUID;
-import org.openhab.binding.irobot.IRobotBindingConstants;
-import org.openhab.binding.irobot.internal.IdentProtocol;
-import org.openhab.binding.irobot.internal.IdentProtocol.IdentData;
-import org.openhab.binding.irobot.roomba.RoombaConfiguration;
+import org.openhab.binding.irobot.internal.IRobotBindingConstants;
+import org.openhab.binding.irobot.internal.dto.IdentProtocol;
+import org.openhab.binding.irobot.internal.dto.IdentProtocol.IdentData;
 import org.osgi.service.component.annotations.Component;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import com.google.gson.JsonParseException;
 
-@Component(service = DiscoveryService.class)
+/**
+ * Discovery service for iRobots
+ *
+ * @author Pavel Fedin - Initial contribution
+ *
+ */
+@Component(service = DiscoveryService.class, configurationPid = "discovery.irobot")
+@NonNullByDefault
 public class IRobotDiscoveryService extends AbstractDiscoveryService {
 
-    private final static Logger logger = LoggerFactory.getLogger(IRobotDiscoveryService.class);
+    private final Logger logger = LoggerFactory.getLogger(IRobotDiscoveryService.class);
     private final Runnable scanner;
-    private ScheduledFuture<?> backgroundFuture;
+    private @Nullable ScheduledFuture<?> backgroundFuture;
 
     public IRobotDiscoveryService() {
         super(Collections.singleton(IRobotBindingConstants.THING_TYPE_ROOMBA), 30, true);
@@ -40,28 +61,27 @@ public class IRobotDiscoveryService extends AbstractDiscoveryService {
 
     @Override
     protected void startBackgroundDiscovery() {
-        logger.trace("Starting background discovery");
         stopBackgroundScan();
         backgroundFuture = scheduler.scheduleWithFixedDelay(scanner, 0, 60, TimeUnit.SECONDS);
     }
 
     @Override
     protected void stopBackgroundDiscovery() {
-        logger.trace("Stopping background discovery");
         stopBackgroundScan();
         super.stopBackgroundDiscovery();
     }
 
     private void stopBackgroundScan() {
-        if (backgroundFuture != null && !backgroundFuture.isDone()) {
-            backgroundFuture.cancel(true);
+        ScheduledFuture<?> scan = backgroundFuture;
+
+        if (scan != null) {
+            scan.cancel(true);
             backgroundFuture = null;
         }
     }
 
     @Override
     protected void startScan() {
-        logger.trace("startScan");
         scheduler.execute(scanner);
     }
 
@@ -71,13 +91,11 @@ public class IRobotDiscoveryService extends AbstractDiscoveryService {
             for (InetAddress broadcastAddress : getBroadcastAddresses()) {
                 logger.debug("Starting broadcast for {}", broadcastAddress.toString());
 
-                DatagramSocket socket;
-                try {
-                    socket = IdentProtocol.sendRequest(broadcastAddress);
+                try (DatagramSocket socket = IdentProtocol.sendRequest(broadcastAddress)) {
                     while (receivePacketAndDiscover(socket)) {
                     }
-                } catch (Exception e) {
-                    logger.debug("Error sending broadcast: {}", e.toString());
+                } catch (IOException e) {
+                    logger.warn("Error sending broadcast: {}", e.toString());
                 }
             }
 
@@ -92,7 +110,9 @@ public class IRobotDiscoveryService extends AbstractDiscoveryService {
             try {
                 addresses.add(InetAddress.getByName(broadcastAddress));
             } catch (UnknownHostException e) {
-                logger.warn("Error broadcasting to {}", broadcastAddress, e);
+                // The broadcastAddress is supposed to be raw IP, not a hostname, like 192.168.0.255.
+                // Getting UnknownHost on it would be totally strange, some internal system error.
+                logger.warn("Error broadcasting to {}: {}", broadcastAddress, e.getMessage());
             }
         }
 
@@ -104,37 +124,32 @@ public class IRobotDiscoveryService extends AbstractDiscoveryService {
 
         try {
             incomingPacket = IdentProtocol.receiveResponse(socket);
-        } catch (Exception e) {
+        } catch (IOException e) {
             // This is not really an error, eventually we get a timeout
             // due to a loop in the caller
             return false;
         }
 
         String host = incomingPacket.getAddress().toString().substring(1);
-
-        logger.debug("Received reply from {}", host);
-        logger.trace(new String(incomingPacket.getData()));
-
         IdentProtocol.IdentData ident;
 
         try {
             ident = IdentProtocol.decodeResponse(incomingPacket);
         } catch (JsonParseException e) {
-            logger.error("Malformed JSON reply!");
+            logger.warn("Malformed IDENT reply from {}!", host);
             return true;
         }
 
         // This check comes from Roomba980-Python
         if (ident.ver < IdentData.MIN_SUPPORTED_VERSION) {
-            logger.info("Found unsupported iRobot \"{}\" version {} at {}", ident.robotname, ident.ver, host);
+            logger.warn("Found unsupported iRobot \"{}\" version {} at {}", ident.robotname, ident.ver, host);
             return true;
         }
 
         if (ident.product.equals(IdentData.PRODUCT_ROOMBA)) {
             ThingUID thingUID = new ThingUID(IRobotBindingConstants.THING_TYPE_ROOMBA, host.replace('.', '_'));
-            DiscoveryResult result = DiscoveryResultBuilder.create(thingUID)
-                    .withProperty(RoombaConfiguration.FIELD_IPADDRESS, host).withLabel("iRobot " + ident.robotname)
-                    .build();
+            DiscoveryResult result = DiscoveryResultBuilder.create(thingUID).withProperty("ipaddress", host)
+                    .withRepresentationProperty("ipaddress").withLabel("iRobot " + ident.robotname).build();
 
             thingDiscovered(result);
         }

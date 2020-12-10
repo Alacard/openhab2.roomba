@@ -1,4 +1,16 @@
-package org.openhab.binding.irobot.internal;
+/**
+ * Copyright (c) 2010-2020 Contributors to the openHAB project
+ *
+ * See the NOTICE file(s) distributed with this work for additional
+ * information.
+ *
+ * This program and the accompanying materials are made available under the
+ * terms of the Eclipse Public License 2.0 which is available at
+ * http://www.eclipse.org/legal/epl-2.0
+ *
+ * SPDX-License-Identifier: EPL-2.0
+ */
+package org.openhab.binding.irobot.internal.dto;
 
 import java.io.IOException;
 import java.io.StringReader;
@@ -11,10 +23,16 @@ import com.google.gson.Gson;
 import com.google.gson.JsonParseException;
 import com.google.gson.stream.JsonReader;
 
+/**
+ * iRobot discovery and identification protocol
+ *
+ * @author Pavel Fedin - Initial contribution
+ *
+ */
 public class IdentProtocol {
-
     private static final String UDP_PACKET_CONTENTS = "irobotmcs";
     private static final int REMOTE_UDP_PORT = 5678;
+    private static final Gson gson = new Gson();
 
     public static DatagramSocket sendRequest(InetAddress host) throws IOException {
         DatagramSocket socket = new DatagramSocket();
@@ -69,14 +87,14 @@ public class IdentProtocol {
          * }
          * @formatter:on
          */
-        String reply = new String(packet.getData());
+        String reply = new String(packet.getData(), StandardCharsets.UTF_8);
         // We are not consuming all the fields, so we have to create the reader explicitly
         // If we use fromJson(String) or fromJson(java.util.reader), it will throw
         // "JSON not fully consumed" exception, because not all the reader's content has been
         // used up. We want to avoid that for compatibility reasons because newer iRobot versions
         // may add fields.
         JsonReader jsonReader = new JsonReader(new StringReader(reply));
-        IdentData data = new Gson().fromJson(jsonReader, IdentData.class);
+        IdentData data = gson.fromJson(jsonReader, IdentData.class);
 
         data.postParse();
         return data;
@@ -90,16 +108,17 @@ public class IdentProtocol {
         private String hostname;
         public String robotname;
 
+        // These two fields are synthetic, they are not contained in JSON
         public String product;
         public String blid;
 
         public void postParse() {
             // Synthesize missing properties.
+            String[] hostparts = hostname.split("-");
+
             // This also comes from Roomba980-Python. Comments there say that "iRobot"
             // prefix is used by i7. We assume for other robots it would be product
             // name, e. g. "Scooba"
-            String[] hostparts = hostname.split("-");
-
             if (hostparts[0].equals("iRobot")) {
                 product = "Roomba";
             } else {

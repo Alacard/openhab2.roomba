@@ -1,3 +1,15 @@
+/**
+ * Copyright (c) 2010-2020 Contributors to the openHAB project
+ *
+ * See the NOTICE file(s) distributed with this work for additional
+ * information.
+ *
+ * This program and the accompanying materials are made available under the
+ * terms of the Eclipse Public License 2.0 which is available at
+ * http://www.eclipse.org/legal/epl-2.0
+ *
+ * SPDX-License-Identifier: EPL-2.0
+ */
 package org.openhab.binding.irobot.internal;
 
 import java.io.IOException;
@@ -6,6 +18,7 @@ import java.net.InetAddress;
 import java.net.Socket;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
+import java.nio.charset.StandardCharsets;
 import java.security.KeyManagementException;
 import java.security.NoSuchAlgorithmException;
 import java.security.cert.CertificateException;
@@ -15,9 +28,18 @@ import javax.net.ssl.SSLContext;
 import javax.net.ssl.TrustManager;
 import javax.net.ssl.X509TrustManager;
 
-// A "raw MQTT" client for sending custom "get password" request.
-// Seems pretty much reinventing a bicycle, but it looks like built-in OpenHAB MQTT
-// library doesn't provide for sending and receiving custom packets.
+import org.eclipse.jdt.annotation.NonNullByDefault;
+import org.eclipse.jdt.annotation.Nullable;
+
+/**
+ * A "raw MQTT" client for sending custom "get password" request.
+ * Seems pretty much reinventing a bicycle, but it looks like HiveMq
+ * doesn't provide for sending and receiving custom packets.
+ *
+ * @author Pavel Fedin - Initial contribution
+ *
+ */
+@NonNullByDefault
 public class RawMQTT {
     public static final int ROOMBA_MQTT_PORT = 8883;
 
@@ -56,7 +78,7 @@ public class RawMQTT {
             return buffer.get(4);
         }
 
-        public String getPassword() {
+        public @Nullable String getPassword() {
             if (getStatus() != 0) {
                 return null;
             }
@@ -67,31 +89,25 @@ public class RawMQTT {
             buffer.position(HEADER_SIZE);
             buffer.get(passwd);
 
-            return new String(passwd);
+            return new String(passwd, StandardCharsets.ISO_8859_1);
         }
-
     }
 
     // Roomba MQTT is using SSL with custom root CA certificate.
     private static class MQTTTrustManager implements X509TrustManager {
         @Override
-        public X509Certificate[] getAcceptedIssuers() {
+        public X509Certificate @Nullable [] getAcceptedIssuers() {
             return null;
         }
 
         @Override
-        public void checkClientTrusted(X509Certificate[] arg0, String arg1) throws CertificateException {
+        public void checkClientTrusted(X509Certificate @Nullable [] arg0, @Nullable String arg1)
+                throws CertificateException {
         }
 
         @Override
-        public void checkServerTrusted(X509Certificate[] certs, String authMethod) throws CertificateException {
-            /*
-             * TODO: Retrieve Roomba CA certificate and implement proper verification
-             * logger.debug("Auth method: " + authMethod);
-             * for (X509Certificate cert : certs) {
-             * logger.debug("Cert: " + cert.toString());
-             * }
-             */
+        public void checkServerTrusted(X509Certificate @Nullable [] certs, @Nullable String authMethod)
+                throws CertificateException {
         }
     }
 
@@ -104,6 +120,7 @@ public class RawMQTT {
 
         sc.init(null, getTrustManagers(), new java.security.SecureRandom());
         socket = sc.getSocketFactory().createSocket(host, ROOMBA_MQTT_PORT);
+        socket.setSoTimeout(3000);
     }
 
     public void close() throws IOException {
@@ -122,7 +139,7 @@ public class RawMQTT {
         socket.getOutputStream().write(passwdRequest);
     }
 
-    public Packet readPacket() throws IOException {
+    public @Nullable Packet readPacket() throws IOException {
         byte[] header = new byte[2];
         int l = receive(header);
 
