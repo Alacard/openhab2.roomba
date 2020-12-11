@@ -164,6 +164,10 @@ public class RoombaHandler extends BaseThingHandler {
             sendDelta(new MQTTProtocol.PowerBoost(command.equals(BOOST_AUTO), command.equals(BOOST_PERFORMANCE)));
         } else if (ch.equals(CHANNEL_CLEAN_PASSES)) {
             sendDelta(new MQTTProtocol.CleanPasses(!command.equals(PASSES_AUTO), command.equals(PASSES_2)));
+        } else if (ch.equals(CHANNEL_MAP_UPLOAD)) {
+            if (command instanceof OnOffType) {
+                sendDelta(new MQTTProtocol.MapUploadAllowed(command.equals(OnOffType.ON)));
+            }
         }
     }
 
@@ -461,6 +465,10 @@ public class RoombaHandler extends BaseThingHandler {
                 // Can be overridden by "noAutoPasses":false
                 reportTwoPasses();
             }
+        }
+
+        if (reported.mapUploadAllowed != null) {
+            reportSwitch(CHANNEL_MAP_UPLOAD, reported.mapUploadAllowed);
         }
 
         reportProperty(Thing.PROPERTY_FIRMWARE_VERSION, reported.softwareVer);
